@@ -1,10 +1,10 @@
-# Optional local Neo4j for development and testing.
+# Local development stack: Neo4j database + the Six Degrees FastAPI app.
 # CognoDB speaks the same openCypher-over-Bolt protocol, so anything that works
 # here works against a CognoDB Cloud instance (the submission target).
 #
-#   npm run db:up     # start Neo4j
-#   npm run seed      # load the dataset
-#   npm run start     # run the app
+#   docker compose up -d --build           # start Neo4j + the app (http://localhost:3000)
+#   docker compose up -d neo4j             # just the database
+#   docker compose run --rm app python scripts/seed.py   # load the dataset into Neo4j
 services:
   neo4j:
     image: neo4j:5.26-community
@@ -25,6 +25,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+  app:
+    build: .
+    container_name: six-degrees-app
+    ports:
+      - "3000:3000" # the web app (frontend + API)
+    environment:
+      # Point the app at the local Neo4j service above. Override with your own
+      # bolt:// / bolt+s:// URI if you prefer to develop against CognoDB Cloud.
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      # PORT is only needed here because the Dockerfile's CMD defaults to 3000;
+      # on Render the platform injects PORT itself — don't set it there.
+      PORT: 3000
+    depends_on:
+      neo4j:
+        condition: service_healthy
 
 volumes:
   neo4j-data:

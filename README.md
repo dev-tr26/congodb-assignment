@@ -123,7 +123,8 @@ scripts/          seed.py (loader) · dataset.py (download/parse) · profiles.py
                   smoke.py (exercises every headline query)
 cypher/           queries.cypher — human-readable query reference
 data/             committed edge list (facebook_combined.txt)
-docker-compose.yml  optional local Neo4j for development/testing
+Dockerfile        container image for the app (reads $PORT at runtime)
+docker-compose.yml  local stack: Neo4j + the app in one command
 requirements.txt  fastapi · uvicorn · neo4j · python-dotenv
 ```
 
@@ -152,6 +153,17 @@ python -m uvicorn main:app --reload --port 3000
 ```
 
 This mirrors CognoDB exactly — same protocol, same driver, same queries.
+
+#### No Python installed? Run the whole stack in Docker instead
+
+```bash
+docker compose up -d --build     # builds the image, starts Neo4j + the app
+# http://localhost:3000 — then load the dataset:
+docker compose run --rm app python scripts/seed.py
+```
+
+The `app` service builds from the `Dockerfile` and is wired to the local Neo4j
+service automatically.
 
 ### 2. Point it at CognoDB Cloud (the assignment target)
 
@@ -295,12 +307,27 @@ MERGE (b)-[:FRIENDS_WITH]->(a)
 
 The app is a standard Python/FastAPI service — any host that runs Python works. Free options:
 
-- **[Render](https://render.com)** (free web service): root dir `.`, build `pip install -r
-  requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`, add the `NEO4J_*` env
-  vars from the dashboard. A free Render URL is a great demo link.
+- **[Render](https://render.com)** (free web service): two ways to deploy, both fine:
+  - **Native (no Docker):** root dir `.`, build `pip install -r requirements.txt`, start
+    `uvicorn main:app --host 0.0.0.0 --port $PORT`, add the `NEO4J_*` env vars from the dashboard.
+  - **Docker:** push this repo to GitHub and create a Render web service from it — Render
+    detects the `Dockerfile` and builds the image automatically. Add the `NEO4J_*` env vars
+    (or use the Render Dockerfile / Render.yaml env-sync). The `Dockerfile` needs no changes.
 - **Railway / Fly.io / Hugging Face Spaces**: same shape — set the three env vars, deploy.
 
 Keep the CognoDB free instance running so graders can try the app against live data.
+
+### Where does the port come from on Render?
+
+**Not from the Dockerfile.** `EXPOSE 3000` in the Dockerfile is documentation only — Docker
+never routes traffic to it and Render ignores it. Instead, **Render injects a `PORT` environment
+variable into your container at runtime** and your process must listen on exactly that value;
+Render then routes incoming requests to it.
+
+The `Dockerfile`'s `CMD` reads that variable (`${PORT:-3000}`), and `app/config.py` also reads
+`PORT` — so the same image works unmodified on Render (where `PORT` is injected) and locally
+(where it defaults to 3000). The only rule: **don't set `PORT` yourself in the Render dashboard**
+— let the platform own it.
 
 ---
 
