@@ -11,10 +11,42 @@
 // ─────────────────────────────────────────────────────────────────────
 
 // ── 1. Core feature: friend-of-friend recommendations ────────────────
-// 2-hop traversal: me → friend → candidate.
-// Candidates who are already my friends (or myself) are excluded.
-// Ranked by count of DISTINCT mutual friends, then by candidate degree.
-// Parameters: $userId, $limit
+// 2-hop traversal: me → friend → candidate, ranked by mutual friend count.
+// Composed from three small, bounded statements (see src/routes/users.js):
+//
+//  (a) direct-friend ids for the exclusion, because CognoDB evaluates
+//      `NOT (a)-[:R]->(b)` pattern predicates to zero rows;
+//  (b) a bounded candidate pool — expand through the user's top
+//      `$friendLimit` friends by connection count so the statement stays
+//      inside the query deadline even for 1000-friend hubs;
+//  (c) exact mutual counts over the pool, so the shown badge always
+//      matches the mutual-friends tab.
+
+// (a) Parameters: $id
+MATCH (u:User {id: $id})-[:FRIENDS_WITH]->(f:User)
+RETURN f.id AS id
+
+// (b) Parameters: $userId, $friendLimit, $friendIds, $poolLimit
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend:User)
+WITH me, friend
+ORDER BY friend.degree DESC
+LIMIT $friendLimit
+MATCH (friend)-[:FRIENDS_WITH]->(candidate:User)
+WHERE candidate.id <> $userId
+  AND NOT candidate.id IN $friendIds
+RETURN DISTINCT candidate
+ORDER BY candidate.degree DESC, candidate.id ASC
+LIMIT $poolLimit
+
+// (c) Parameters: $userId, $candidateIds
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(m:User)<-[:FRIENDS_WITH]-(candidate:User)
+WHERE candidate.id IN $candidateIds
+RETURN candidate.id AS id, count(m) AS mutualCount
+
+// The route merges (b)+(c), sorts by mutualCount DESC, degree DESC, id ASC,
+// and returns the top $limit. Ideal single-statement form (reference) —
+// requires a planner that supports pattern-predicate negation and can
+// afford the full expansion:
 
 MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend:User)-[:FRIENDS_WITH]->(candidate:User)
 WHERE candidate <> me
@@ -57,8 +89,23 @@ RETURN m
 ORDER BY m.degree DESC, m.id ASC
 
 // ── 6. Degrees of separation (shortest path) ─────────────────────────
-// Variable-length BFS up to 8 hops. In SQL this is a recursive CTE
-// with an explicit termination condition. Parameters: $idA, $idB
+// CognoDB's `shortestPath` carries a hard BFS budget (5 s) that this graph
+// exhausts on the free tier, so the production code (src/path.js) runs a
+// bidirectional BFS from the application, expanding one hop per query:
+//
+//   expand a frontier (one hop)          Parameters: $ids
+MATCH (u:User) WHERE u.id IN $ids
+MATCH (u)-[:FRIENDS_WITH]->(f:User)
+RETURN u.id AS uid, collect(f) AS friends
+
+//   materialise a found path             Parameters: $ids
+MATCH (u:User) WHERE u.id IN $ids
+RETURN u
+
+// The ideal declarative form — variable-length BFS up to 8 hops. In SQL
+// this is a recursive CTE with an explicit termination condition. Keep it
+// for databases whose planner handles it; see src/path.js for why this
+// app drives the search hop-by-hop instead. Parameters: $idA, $idB
 
 MATCH p = shortestPath((a:User {id: $idA})-[:FRIENDS_WITH*..8]-(b:User {id: $idB}))
 RETURN nodes(p) AS path

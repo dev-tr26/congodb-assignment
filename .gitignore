@@ -2,8 +2,10 @@
 .env
 .env.local
 
-# Dependencies
-node_modules/
+# Python
+.venv/
+__pycache__/
+*.pyc
 
 # Logs & OS junk
 *.log

@@ -49,11 +49,14 @@ function stateView({ icon = '🛰️', title, text, action = '' }) {
 
 function errorView(err, { retry } = {}) {
   const dbDown = err.status === 503 || /database|graph db|unreachable/i.test(err.message)
-  const title = dbDown ? "Can't reach the graph database" : 'Something went wrong'
-  const text = dbDown
-    ? 'The app is running, but the database isn’t answering. Check your .env credentials and that your CognoDB instance (or local Neo4j) is up.'
-    : err.message || 'An unexpected error occurred.'
-  return `<div class="state state-error"><span class="state-icon" aria-hidden="true">${dbDown ? '🔌' : '😵'}</span><h3>${title}</h3><p>${esc(text)}</p>${
+  const timedOut = err.status === 504
+  const title = timedOut ? 'The database is slow' : dbDown ? "Can't reach the graph database" : 'Something went wrong'
+  const text = timedOut
+    ? err.message || 'That query took too long. Try a less connected person, or retry.'
+    : dbDown
+      ? 'The app is running, but the database isn’t answering. Check your .env credentials and that your CognoDB instance (or local Neo4j) is up.'
+      : err.message || 'An unexpected error occurred.'
+  return `<div class="state state-error"><span class="state-icon" aria-hidden="true">${timedOut ? '⏳' : dbDown ? '🔌' : '😵'}</span><h3>${title}</h3><p>${esc(text)}</p>${
     retry ? `<button class="btn" onclick="${retry}">Try again</button>` : ''
   }</div>`
 }

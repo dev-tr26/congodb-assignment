@@ -6,7 +6,8 @@ It answers one question, the way social networks actually do:
 > **“Friends of my friends, who aren't already my friends — ranked by how many mutual friends we share.”**
 
 A 2-hop traversal over the friendship graph, powered by **CognoDB** (openCypher over Bolt, using the
-official Neo4j JavaScript driver), with a polished web UI and a realistic seed dataset.
+official Neo4j Python driver), served by a **FastAPI** backend with a polished web UI and a realistic
+seed dataset.
 
 ![six-degrees](docs/screenshot-home.png)
 
@@ -91,8 +92,8 @@ The dataset is anonymised (nodes are just integer ids), so the seed script attac
 deterministic profile** to every id — a realistic name, city, job, age and interests — making the
 app feel like a real product. Re-seeding produces identical profiles.
 
-`npm run seed` downloads the dataset automatically if it isn't already in `data/` (the raw edge
-list is committed to the repo, so seeding works fully offline).
+`python scripts/seed.py` downloads the dataset automatically if it isn't already in `data/` (the raw
+edge list is committed to the repo, so seeding works fully offline).
 
 ---
 
@@ -102,24 +103,28 @@ list is committed to the repo, so seeding works fully offline).
 Browser (vanilla JS, no build step)
    │  fetch /api/*
    ▼
-Express server ──── src/server.js
-   ├── src/routes/meta.js    health · stats · top users
-   ├── src/routes/users.js   search · profile · friends · recommendations · mutual · path
-   ├── src/queries.js        all Cypher, as named constants (parameterised only)
-   └── src/db.js             neo4j-driver wrapper (session mgmt, int params, health)
+FastAPI (uvicorn) ──── main.py
+   ├── app/routers/meta.py   health · stats · top users
+   ├── app/routers/users.py  search · profile · friends · recommendations · mutual · path
+   ├── app/queries.py        all Cypher, as named constants (parameterised only)
+   ├── app/path.py           app-side bidirectional BFS for degrees of separation
+   ├── app/db.py             async neo4j-driver wrapper (session mgmt, health)
+   └── app/config.py         env-based config (.env, gitignored)
    │
    ▼  Bolt protocol (openCypher)
 CognoDB (or local Neo4j via docker-compose)
 ```
 
 ```
+main.py           FastAPI app: routers, error handlers, static frontend mount
+app/              config · db wrapper · queries · path BFS · routers
 public/           frontend (index.html, styles.css, app.js) — hash-router SPA
-scripts/          seed.js (loader) · dataset.js (download/parse) · profiles.js (deterministic)
-                  smoke.js (exercises every headline query)
+scripts/          seed.py (loader) · dataset.py (download/parse) · profiles.py (deterministic)
+                  smoke.py (exercises every headline query)
 cypher/           queries.cypher — human-readable query reference
-src/              server, routes, queries, db wrapper
 data/             committed edge list (facebook_combined.txt)
 docker-compose.yml  optional local Neo4j for development/testing
+requirements.txt  fastapi · uvicorn · neo4j · python-dotenv
 ```
 
 ---
@@ -128,7 +133,7 @@ docker-compose.yml  optional local Neo4j for development/testing
 
 ### 0. Prerequisites
 
-- Node.js ≥ 18
+- Python ≥ 3.10
 - A database speaking openCypher over Bolt: **CognoDB Cloud** (the submission target) or local
   Neo4j for development.
 
@@ -137,10 +142,13 @@ docker-compose.yml  optional local Neo4j for development/testing
 The app talks to any Bolt database, so you can develop against local Neo4j first:
 
 ```bash
-npm install
-npm run db:up        # starts neo4j:5.26-community on bolt://localhost:7687
-npm run seed         # loads 4,039 users + 88,234 friendships (~8 s)
-npm start            # → http://localhost:3000
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+docker compose up -d neo4j       # starts neo4j:5.26-community on bolt://localhost:7687
+python scripts/seed.py           # loads 4,039 users + 88,234 friendships (~8 s)
+python -m uvicorn main:app --reload --port 3000
 ```
 
 This mirrors CognoDB exactly — same protocol, same driver, same queries.
@@ -163,8 +171,8 @@ cp .env.example .env
 4. Load data and run:
 
 ```bash
-npm run seed -- --fresh    # loads into CognoDB
-npm start                  # → http://localhost:3000
+python scripts/seed.py --fresh   # loads into CognoDB
+python -m uvicorn main:app --port 3000
 ```
 
 > Secrets are read from environment variables only. `.env` is gitignored and never committed;
@@ -179,27 +187,53 @@ via `$params`, never by string concatenation. See `cypher/queries.cypher` for th
 
 ### 1. Recommendations (the core 2-hop query)
 
+Walks `me → friend → candidate` (2 hops), drops me and my direct friends, counts the distinct
+mutual friends per candidate, and ranks. Result: *“Quinn Singh — 4 mutual friends”*. On CognoDB
+this is composed from three small, bounded statements (see `app/routers/users.py`):
+
 ```cypher
-MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend:User)-[:FRIENDS_WITH]->(candidate:User)
-WHERE candidate <> me
-  AND NOT (me)-[:FRIENDS_WITH]->(candidate)
-WITH candidate, count(DISTINCT friend) AS mutualCount
-RETURN candidate, mutualCount
-ORDER BY mutualCount DESC, candidate.degree DESC, candidate.id ASC
-LIMIT $limit
+MATCH (u:User {id: $id})-[:FRIENDS_WITH]->(f:User)
+RETURN f.id AS id
+
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend:User)
+WITH me, friend
+ORDER BY friend.degree DESC
+LIMIT $friendLimit
+MATCH (friend)-[:FRIENDS_WITH]->(candidate:User)
+WHERE candidate.id <> $userId
+  AND NOT candidate.id IN $friendIds
+RETURN DISTINCT candidate
+ORDER BY candidate.degree DESC, candidate.id ASC
+LIMIT $poolLimit
+
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(m:User)<-[:FRIENDS_WITH]-(candidate:User)
+WHERE candidate.id IN $candidateIds
+RETURN candidate.id AS id, count(m) AS mutualCount
 ```
 
-Walks `me → friend → candidate` (2 hops), drops me and my direct friends, counts the distinct
-mutual friends per candidate, and ranks. Result: *“Quinn Singh — 4 mutual friends”*.
+Three deliberate choices, each verified against CognoDB specifically:
+
+1. **Exclusion by id list.** `NOT candidate.id IN $friendIds` replaces the textbook
+   `NOT (me)-[:FRIENDS_WITH]->(candidate)` pattern predicate, which CognoDB evaluates to **zero
+   rows** — a silent bug that made recommendations come back empty.
+2. **Bounded walk.** The 2-hop expansion goes through the user's top `$friendLimit` friends
+   (most-connected first), keeping the statement inside the server's query deadline even for
+   1,000-friend hubs. Most-connected friends carry most of the signal; for typical users the
+   limit never binds.
+3. **Exact counts.** Mutual counts are computed in a separate bounded query over the candidate
+   pool, so a suggestion's badge always matches its real shared-friend count.
+
+The ideal single-statement form (which needs a planner that supports pattern-predicate negation
+and can afford the full expansion) is documented in `cypher/queries.cypher`.
 
 ### 2. Degrees of separation (shortest path)
 
-```cypher
-MATCH p = shortestPath((a:User {id: $idA})-[:FRIENDS_WITH*..8]-(b:User {id: $idB}))
-RETURN nodes(p) AS path
-```
-
-Variable-length BFS up to 8 hops — *“Chloe Nguyen → Elena Lee → Liam Yamamoto: 2 degrees”*.
+CognoDB's `shortestPath` has a hard 5 s BFS budget that this graph exhausts on the free tier
+(an 8-hop `shortestPath` times out even for directly connected people), so the app drives the
+search itself in [`app/path.py`](app/path.py): a **bidirectional BFS**, one hop per query —
+`MATCH (u:User) WHERE u.id IN $ids ... RETURN collect(f)` — meeting in the middle, capped at
+8 hops. Every statement stays small and index-backed, so the whole search stays well inside the
+query deadline. Result: *“Chloe Nguyen → Elena Lee → Liam Yamamoto: 2 degrees”*.
 
 ### 3. Mutual friends
 
@@ -252,18 +286,19 @@ MERGE (b)-[:FRIENDS_WITH]->(a)
 - **Global DB banner:** if the database goes down, a sticky banner appears and the app keeps
   serving static pages instead of crashing.
 - The server **starts even when the DB is down** and returns clean `503` JSON for API calls,
-  so the UI can explain what's wrong rather than fail silently.
+  so the UI can explain what's wrong rather than fail silently. Slow queries that outrun the
+  database's deadline surface as a clear `504` “database took too long” state.
 
 ---
 
 ## Deployment (hosted demo)
 
-The app is a standard Node/Express app — any host that runs Node works. Free options:
+The app is a standard Python/FastAPI service — any host that runs Python works. Free options:
 
-- **[Render](https://render.com)** (free web service): root dir `.`, build `npm install`,
-  start `npm start`, add the `NEO4J_*` env vars from the dashboard. A free Render URL is a great
-  demo link.
-- **Railway / Fly.io / Heroku**: same shape — set the three env vars, deploy.
+- **[Render](https://render.com)** (free web service): root dir `.`, build `pip install -r
+  requirements.txt`, start `uvicorn main:app --host 0.0.0.0 --port $PORT`, add the `NEO4J_*` env
+  vars from the dashboard. A free Render URL is a great demo link.
+- **Railway / Fly.io / Hugging Face Spaces**: same shape — set the three env vars, deploy.
 
 Keep the CognoDB free instance running so graders can try the app against live data.
 
@@ -293,11 +328,11 @@ the deliverables.
 | Requirement | Where |
 | --- | --- |
 | Labeled nodes, typed relationships, properties + diagram | “Data model” above |
-| Real seed data loaded by a script | `scripts/seed.js`, SNAP dataset |
+| Real seed data loaded by a script | `scripts/seed.py`, SNAP dataset |
 | ≥1 multi-hop traversal | Recommendations (2 hops), shortest path (up to 8) |
 | ≥1 query awkward for SQL | Mutual-friend ranking, shortest path — see “Why a graph database?” |
-| Parameterised queries, no concatenation | `src/queries.js` + `src/db.js` |
+| Parameterised queries, no concatenation | `app/queries.py` + `app/db.py` |
 | Functional web app with clean UX | `public/` |
 | Secrets from env vars, never committed | `.env.example`, `.gitignore` |
-| Graceful error handling when DB unreachable | `src/server.js` error middleware, health banner |
+| Graceful error handling when DB unreachable | `main.py` error handlers, health banner |
 | Clear project structure | “Architecture” above |
