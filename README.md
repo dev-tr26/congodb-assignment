@@ -9,7 +9,9 @@ A 2-hop traversal over the friendship graph, powered by **CognoDB** (openCypher 
 official Neo4j Python driver), served by a **FastAPI** backend with a polished web UI and a realistic
 seed dataset.
 
-![six-degrees](docs/screenshot-home.png)
+---
+
+### Live link : https://congodb-assignment.onrender.com/
 
 ---
 
@@ -132,13 +134,12 @@ requirements.txt  fastapi · uvicorn · neo4j · python-dotenv
 
 ## Setup
 
-### 0. Prerequisites
+###  Prerequisites
 
-- Python ≥ 3.10
 - A database speaking openCypher over Bolt: **CognoDB Cloud** (the submission target) or local
   Neo4j for development.
 
-### 1. Local development (fast, free) — Docker Neo4j
+###  Local development — Docker Neo4j
 
 The app talks to any Bolt database, so you can develop against local Neo4j first:
 
@@ -186,9 +187,6 @@ cp .env.example .env
 python scripts/seed.py --fresh   # loads into CognoDB
 python -m uvicorn main:app --port 3000
 ```
-
-> Secrets are read from environment variables only. `.env` is gitignored and never committed;
-> `.env.example` documents every variable.
 
 ---
 
@@ -289,77 +287,3 @@ MERGE (b)-[:FRIENDS_WITH]->(a)
 | `GET /api/users/:id/path/:otherId` | shortest path (degrees of separation) |
 
 ---
-
-## UX & error handling
-
-- **States everywhere:** skeleton loaders while fetching, friendly empty states (“No new
-  suggestions — you're already connected to everyone!”), and a dedicated error view when the
-  database is unreachable, with a **Retry** button.
-- **Global DB banner:** if the database goes down, a sticky banner appears and the app keeps
-  serving static pages instead of crashing.
-- The server **starts even when the DB is down** and returns clean `503` JSON for API calls,
-  so the UI can explain what's wrong rather than fail silently. Slow queries that outrun the
-  database's deadline surface as a clear `504` “database took too long” state.
-
----
-
-## Deployment (hosted demo)
-
-The app is a standard Python/FastAPI service — any host that runs Python works. Free options:
-
-- **[Render](https://render.com)** (free web service): two ways to deploy, both fine:
-  - **Native (no Docker):** root dir `.`, build `pip install -r requirements.txt`, start
-    `uvicorn main:app --host 0.0.0.0 --port $PORT`, add the `NEO4J_*` env vars from the dashboard.
-  - **Docker:** push this repo to GitHub and create a Render web service from it — Render
-    detects the `Dockerfile` and builds the image automatically. Add the `NEO4J_*` env vars
-    (or use the Render Dockerfile / Render.yaml env-sync). The `Dockerfile` needs no changes.
-- **Railway / Fly.io / Hugging Face Spaces**: same shape — set the three env vars, deploy.
-
-Keep the CognoDB free instance running so graders can try the app against live data.
-
-### Where does the port come from on Render?
-
-**Not from the Dockerfile.** `EXPOSE 3000` in the Dockerfile is documentation only — Docker
-never routes traffic to it and Render ignores it. Instead, **Render injects a `PORT` environment
-variable into your container at runtime** and your process must listen on exactly that value;
-Render then routes incoming requests to it.
-
-The `Dockerfile`'s `CMD` reads that variable (`${PORT:-3000}`), and `app/config.py` also reads
-`PORT` — so the same image works unmodified on Render (where `PORT` is injected) and locally
-(where it defaults to 3000). The only rule: **don't set `PORT` yourself in the Render dashboard**
-— let the platform own it.
-
----
-
-## Screenshots
-
-Add real screenshots of the running app here (required by the assignment). With the app running:
-
-- Home: hero + stats + “Most connected people”
-- Profile: “People you may know” ranked list
-- Degrees of separation: shortest path between two people
-
-```text
-docs/screenshot-home.png
-docs/screenshot-profile.png
-docs/screenshot-degrees.png
-```
-
-A short screen recording of the demo flow (search → suggestions → degrees of separation) completes
-the deliverables.
-
----
-
-## Project checklist vs. the assignment
-
-| Requirement | Where |
-| --- | --- |
-| Labeled nodes, typed relationships, properties + diagram | “Data model” above |
-| Real seed data loaded by a script | `scripts/seed.py`, SNAP dataset |
-| ≥1 multi-hop traversal | Recommendations (2 hops), shortest path (up to 8) |
-| ≥1 query awkward for SQL | Mutual-friend ranking, shortest path — see “Why a graph database?” |
-| Parameterised queries, no concatenation | `app/queries.py` + `app/db.py` |
-| Functional web app with clean UX | `public/` |
-| Secrets from env vars, never committed | `.env.example`, `.gitignore` |
-| Graceful error handling when DB unreachable | `main.py` error handlers, health banner |
-| Clear project structure | “Architecture” above |
