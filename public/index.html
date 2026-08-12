@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Six Degrees — Friend-of-friend recommender</title>
+  <meta name="description" content="A graph-database powered friend-of-friend recommender. Find the people you're one hop away from." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%AA%A1%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="db-banner" class="db-banner" hidden>
+    <span class="db-banner-dot" aria-hidden="true"></span>
+    <span id="db-banner-text">Can't reach the graph database.</span>
+    <button id="db-banner-retry" class="db-banner-retry" type="button">Retry</button>
+  </div>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="brand" href="#/">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Six Degrees</span>
+      </a>
+
+      <form id="global-search" class="search" role="search" autocomplete="off">
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"></circle>
+          <line x1="16.5" y1="16.5" x2="21" y2="21"></line>
+        </svg>
+        <input
+          id="global-search-input"
+          type="search"
+          placeholder="Find a person…"
+          aria-label="Search for a person"
+        />
+        <div id="search-suggestions" class="search-suggestions" hidden></div>
+      </form>
+
+      <nav class="site-nav">
+        <a class="nav-link" href="#/explore">Explore</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="view" class="view" tabindex="-1"></main>
+
+  <footer class="site-footer">
+    <p>
+      <strong>Six Degrees</strong> — a friend-of-friend recommender on a graph database ·
+      <a href="https://snap.stanford.edu/data/facebook_combined.html" target="_blank" rel="noopener">SNAP Facebook network</a>
+    </p>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "six-degrees",
+  "version": "1.0.0",
+  "description": "Six Degrees — a friend-of-friend recommender backed by CognoDB (openCypher over Bolt)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js",
+    "smoke": "node scripts/smoke.js",
+    "db:up": "docker compose up -d neo4j",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f neo4j"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "neo4j-driver": "^5.27.0"
+  }
+}

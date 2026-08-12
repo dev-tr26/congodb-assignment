@@ -1,0 +1,303 @@
+# Six Degrees — a friend-of-friend recommender
+
+A graph database application built for the **WEXA AI / CognoDB take-home assignment**.
+It answers one question, the way social networks actually do:
+
+> **“Friends of my friends, who aren't already my friends — ranked by how many mutual friends we share.”**
+
+A 2-hop traversal over the friendship graph, powered by **CognoDB** (openCypher over Bolt, using the
+official Neo4j JavaScript driver), with a polished web UI and a realistic seed dataset.
+
+![six-degrees](docs/screenshot-home.png)
+
+---
+
+## Use case
+
+Social platforms suggest new connections via *“People you may know”*. Under the hood that's a pure
+graph question: walk from me to my friends to *their* friends (2 hops), drop anyone I'm already
+friends with, and rank the rest by how many shared friends we have. The more mutual friends, the
+stronger the signal — exactly how LinkedIn and Facebook surface suggestions.
+
+Six Degrees makes that visible and explorable:
+
+- **Search** any of 4,000+ people in the network.
+- See **personalised suggestions** ranked by mutual-friend count.
+- Explore someone's **friends**, the **mutual friends** you share with them, and the
+  **shortest path (degrees of separation)** between any two people.
+
+### Why a graph database?
+
+This problem is *about relationships*, so a graph earns its place in three concrete ways:
+
+1. **Multi-hop traversal is native.** “Friends of friends” is one pattern:
+   `(me)-[:FRIENDS_WITH]->(friend)-[:FRIENDS_WITH]->(candidate)`. In a relational schema you'd
+   self-join the `friendships` adjacency table *twice*, then join again to exclude direct friends —
+   and each extra hop means another self-join. Here, adding a 3rd hop is just one more
+   `-[:FRIENDS_WITH]->()` in the pattern.
+
+2. **The ranking signal is a graph aggregate.** “Count of distinct mutual friends” is a
+   `count(DISTINCT friend)` over the traversal. In SQL this is a group-by over joined rows that
+   grows quadratically with network size and needs careful deduplication.
+
+3. **Shortest path / degrees of separation is a first-class query.** `shortestPath((a)-[*..8]-(b))`
+   is a built-in BFS. In SQL it requires a recursive CTE with hand-rolled termination conditions
+   and cycle detection. The graph does it declaratively.
+
+A relational database *can* express all of this, but every query fights the model — which is the
+whole point of this use case: the interesting questions are about *connections*, not rows.
+
+---
+
+## Data model
+
+```
+┌──────────┐      FRIENDS_WITH       ┌──────────┐
+│  :User   │ ══════════════════════► │  :User   │
+│          │ ◄══════════════════════ │          │
+└──────────┘   (stored both ways)    └──────────┘
+   │ id (int, indexed)
+   │ name (string)
+   │ city, job (string)
+   │ age (int)
+   │ interests (list<string>)
+   │ degree (int — precomputed connection count)
+```
+
+- **Nodes:** `User` — a person in the social network.
+- **Relationships:** `FRIENDS_WITH` — an undirected friendship, stored as two directed edges so
+  every query uses plain `→` patterns.
+- **Properties:** `id` is the dataset's anonymised id; the human-facing profile fields (name, city,
+  job, age, interests) are generated deterministically from the id (see *Dataset* below).
+- **Indexes:** on `User.id` and `User.name` for fast lookups and search.
+
+The schema is deliberately minimal — the assignment's “dead simple” core — and it is trivially
+extensible to richer *“people you may know”* signals later: add an `interests`-based `LIKES`
+relationship, or an `(a)-[:FRIENDS_WITH]->(b)-[:LIKES]->(i)<-[:LIKES]-(c)` path for shared-interest
+ranking, without touching existing queries.
+
+---
+
+## Dataset
+
+**[SNAP ego-Facebook network](https://snap.stanford.edu/data/facebook_combined.html)** (Stanford
+Network Analysis Project) — the classic undirected friendship graph used in social-network research:
+
+- **4,039 users, 88,234 friendships**
+- Free, no sign-up, ~218 KB gzipped — fits the CognoDB free tier easily
+- License: freely available for research use (see the SNAP page)
+
+The dataset is anonymised (nodes are just integer ids), so the seed script attaches a **stable,
+deterministic profile** to every id — a realistic name, city, job, age and interests — making the
+app feel like a real product. Re-seeding produces identical profiles.
+
+`npm run seed` downloads the dataset automatically if it isn't already in `data/` (the raw edge
+list is committed to the repo, so seeding works fully offline).
+
+---
+
+## Architecture
+
+```
+Browser (vanilla JS, no build step)
+   │  fetch /api/*
+   ▼
+Express server ──── src/server.js
+   ├── src/routes/meta.js    health · stats · top users
+   ├── src/routes/users.js   search · profile · friends · recommendations · mutual · path
+   ├── src/queries.js        all Cypher, as named constants (parameterised only)
+   └── src/db.js             neo4j-driver wrapper (session mgmt, int params, health)
+   │
+   ▼  Bolt protocol (openCypher)
+CognoDB (or local Neo4j via docker-compose)
+```
+
+```
+public/           frontend (index.html, styles.css, app.js) — hash-router SPA
+scripts/          seed.js (loader) · dataset.js (download/parse) · profiles.js (deterministic)
+                  smoke.js (exercises every headline query)
+cypher/           queries.cypher — human-readable query reference
+src/              server, routes, queries, db wrapper
+data/             committed edge list (facebook_combined.txt)
+docker-compose.yml  optional local Neo4j for development/testing
+```
+
+---
+
+## Setup
+
+### 0. Prerequisites
+
+- Node.js ≥ 18
+- A database speaking openCypher over Bolt: **CognoDB Cloud** (the submission target) or local
+  Neo4j for development.
+
+### 1. Local development (fast, free) — Docker Neo4j
+
+The app talks to any Bolt database, so you can develop against local Neo4j first:
+
+```bash
+npm install
+npm run db:up        # starts neo4j:5.26-community on bolt://localhost:7687
+npm run seed         # loads 4,039 users + 88,234 friendships (~8 s)
+npm start            # → http://localhost:3000
+```
+
+This mirrors CognoDB exactly — same protocol, same driver, same queries.
+
+### 2. Point it at CognoDB Cloud (the assignment target)
+
+1. Create a free instance at <https://console.cognodb.com> (no credit card, ~1 minute).
+2. Copy the connection URI (`bolt+s://<instance-id>.databases.cognodb.cloud`) and the
+   one-time password for user `cognodb`.
+3. Configure the app:
+
+```bash
+cp .env.example .env
+# edit .env:
+#   NEO4J_URI=bolt+s://<instance-id>.databases.cognodb.cloud
+#   NEO4J_USER=cognodb
+#   NEO4J_PASSWORD=<your-password>
+```
+
+4. Load data and run:
+
+```bash
+npm run seed -- --fresh    # loads into CognoDB
+npm start                  # → http://localhost:3000
+```
+
+> Secrets are read from environment variables only. `.env` is gitignored and never committed;
+> `.env.example` documents every variable.
+
+---
+
+## The queries
+
+All queries are **parameterised** through the official `neo4j-driver` — user input only ever arrives
+via `$params`, never by string concatenation. See `cypher/queries.cypher` for the full reference.
+
+### 1. Recommendations (the core 2-hop query)
+
+```cypher
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend:User)-[:FRIENDS_WITH]->(candidate:User)
+WHERE candidate <> me
+  AND NOT (me)-[:FRIENDS_WITH]->(candidate)
+WITH candidate, count(DISTINCT friend) AS mutualCount
+RETURN candidate, mutualCount
+ORDER BY mutualCount DESC, candidate.degree DESC, candidate.id ASC
+LIMIT $limit
+```
+
+Walks `me → friend → candidate` (2 hops), drops me and my direct friends, counts the distinct
+mutual friends per candidate, and ranks. Result: *“Quinn Singh — 4 mutual friends”*.
+
+### 2. Degrees of separation (shortest path)
+
+```cypher
+MATCH p = shortestPath((a:User {id: $idA})-[:FRIENDS_WITH*..8]-(b:User {id: $idB}))
+RETURN nodes(p) AS path
+```
+
+Variable-length BFS up to 8 hops — *“Chloe Nguyen → Elena Lee → Liam Yamamoto: 2 degrees”*.
+
+### 3. Mutual friends
+
+```cypher
+MATCH (a:User {id: $idA})-[:FRIENDS_WITH]->(m:User)<-[:FRIENDS_WITH]-(b:User {id: $idB})
+RETURN m
+```
+
+### 4. Search & friends
+
+```cypher
+MATCH (u:User) WHERE toLower(u.name) CONTAINS toLower($q) OR toString(u.id) STARTS WITH $q
+RETURN u ORDER BY u.degree DESC LIMIT $limit
+
+MATCH (u:User {id: $id})-[:FRIENDS_WITH]->(f:User) RETURN f ORDER BY f.degree DESC LIMIT $limit
+```
+
+### 5. Seed loading (batch, parameterised)
+
+```cypher
+UNWIND $batch AS e
+MATCH (a:User {id: e[0]}), (b:User {id: e[1]})
+MERGE (a)-[:FRIENDS_WITH]->(b)
+MERGE (b)-[:FRIENDS_WITH]->(a)
+```
+
+---
+
+## API
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/health` | DB connectivity (`200` / `503`) |
+| `GET /api/stats` | users, friendships, avg/max degree |
+| `GET /api/top?limit=` | most-connected people |
+| `GET /api/users/search?q=&limit=` | name/id search |
+| `GET /api/users/:id` | profile |
+| `GET /api/users/:id/friends` | direct friends |
+| `GET /api/users/:id/recommendations` | **friend-of-friend suggestions, ranked** |
+| `GET /api/users/:id/mutual/:otherId` | shared friends |
+| `GET /api/users/:id/path/:otherId` | shortest path (degrees of separation) |
+
+---
+
+## UX & error handling
+
+- **States everywhere:** skeleton loaders while fetching, friendly empty states (“No new
+  suggestions — you're already connected to everyone!”), and a dedicated error view when the
+  database is unreachable, with a **Retry** button.
+- **Global DB banner:** if the database goes down, a sticky banner appears and the app keeps
+  serving static pages instead of crashing.
+- The server **starts even when the DB is down** and returns clean `503` JSON for API calls,
+  so the UI can explain what's wrong rather than fail silently.
+
+---
+
+## Deployment (hosted demo)
+
+The app is a standard Node/Express app — any host that runs Node works. Free options:
+
+- **[Render](https://render.com)** (free web service): root dir `.`, build `npm install`,
+  start `npm start`, add the `NEO4J_*` env vars from the dashboard. A free Render URL is a great
+  demo link.
+- **Railway / Fly.io / Heroku**: same shape — set the three env vars, deploy.
+
+Keep the CognoDB free instance running so graders can try the app against live data.
+
+---
+
+## Screenshots
+
+Add real screenshots of the running app here (required by the assignment). With the app running:
+
+- Home: hero + stats + “Most connected people”
+- Profile: “People you may know” ranked list
+- Degrees of separation: shortest path between two people
+
+```text
+docs/screenshot-home.png
+docs/screenshot-profile.png
+docs/screenshot-degrees.png
+```
+
+A short screen recording of the demo flow (search → suggestions → degrees of separation) completes
+the deliverables.
+
+---
+
+## Project checklist vs. the assignment
+
+| Requirement | Where |
+| --- | --- |
+| Labeled nodes, typed relationships, properties + diagram | “Data model” above |
+| Real seed data loaded by a script | `scripts/seed.js`, SNAP dataset |
+| ≥1 multi-hop traversal | Recommendations (2 hops), shortest path (up to 8) |
+| ≥1 query awkward for SQL | Mutual-friend ranking, shortest path — see “Why a graph database?” |
+| Parameterised queries, no concatenation | `src/queries.js` + `src/db.js` |
+| Functional web app with clean UX | `public/` |
+| Secrets from env vars, never committed | `.env.example`, `.gitignore` |
+| Graceful error handling when DB unreachable | `src/server.js` error middleware, health banner |
+| Clear project structure | “Architecture” above |
